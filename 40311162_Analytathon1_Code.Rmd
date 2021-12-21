@@ -1,0 +1,587 @@
+---
+title: "PreductIve_Model_Code"
+author: "YogeshBore"
+date: "19/07/2021"
+output: pdf_document
+---
+
+##Load all the required libraries
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(factoextra)
+library(corrplot)
+library(xts)
+library(PerformanceAnalytics)
+library(caret)
+library(mgcv)
+library(gridExtra)
+```
+##Task 1: Performed Data Cleaning and Exploratory data analysis
+
+```{r}
+
+#Import data set excel file
+A1_data <- read_excel("./AAL_A1_task.xlsx")
+
+#Convert the given data into data frame
+A1_data <- as.data.frame(A1_data)
+
+#Print first 21 rows 
+head(A1_data$g4_var_2, 21)
+
+#Check the data types of all variables
+str(A1_data)
+
+#Convert the data type character target variable to numerical
+A1_data$g4_var_2 <- as.numeric(A1_data$g4_var_2)
+
+#transforming variable to numeric double, converts character each instance of "NULL" to NA
+head(A1_data$g4_var_2, 21)
+
+#Gives Na's and max and min values and basic idea of spread of variables
+#Check the spread of each variable
+summary(A1_data)
+```
+
+```{r}
+#Find the median of g4_var_2 variable
+median_g4_var_2 <- A1_data %>%
+  filter(!is.na(g4_var_2)) %>%
+  summarize(median(g4_var_2)) %>%
+  pull()
+
+#Data cleaning part
+A1_data_clean <- A1_data %>%
+  select(datetime, g1_var_1, g1_var_2, g1_var_3, g2_var_1, g2_var_2, g2_var_3, g2_var_4, g3_var_1, g3_var_2, g3_var_4, g3_var_5, g4_var_2) %>%
+
+#Imputation performed with median,Median used because it is less sensitive to outliers
+mutate(g4_var_2= ifelse(is.na(g4_var_2), median_g4_var_2, g4_var_2))
+```
+
+```{r}
+# All data other except date is sorted
+Corr_data_no_date <- A1_data_clean[,2:13]
+
+#Find the correlation of all variables from the data set except date
+correlations <- cor(Corr_data_no_date)
+corrplot(correlations, method="color", outline = TRUE, tl.col = "black")
+
+#Find the structure of the sorted data
+str(Corr_data_no_date)
+
+#Mutate column for median for na values
+A1_data <- A1_data %>%
+  mutate(g4_var_2 = ifelse(is.na(g4_var_2), median_g4_var_2, g4_var_2)) 
+  
+pca_data <- prcomp(A1_data[,c(-1,-11,-37)], center = TRUE, scale. = TRUE)
+fviz_pca_var(pca_data, col.var = "cos2", gradient.cols = "lancet")
+```
+#To check the spread of data plot Bar Chart 
+```{r}
+
+#Plot the box plot for the data
+boxplots <- ggplot(stack(Corr_data_no_date), aes(x = ind, y = values)) +
+  geom_boxplot() +
+  facet_wrap( ~ ind, scales="free", ncol = 2) +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+
+#ggsave(boxplots, file="boxplots.png", width = 10)
+
+boxplots
+```
+#For all stages grouped together and plot the boxplot
+
+```{r}
+boxplot(Corr_data_no_date[1:3], main="Stage 1 variables", horizontal = TRUE) 
+boxplot(Corr_data_no_date[4:7],main="Stage 2 variables", horizontal = TRUE) 
+boxplot(Corr_data_no_date[8:11],main="Stage 3 variables", horizontal = TRUE)
+boxplot(Corr_data_no_date[length(colnames(Corr_data_no_date))],main="Stage 4 target variable", horizontal = TRUE)
+```
+
+```{r}
+#By as.Date we lose the time stamp so reading in as Excel keeps POSIXct data type of 'datetime' which maintain time-stamp 
+A1_xts <- as.xts(A1_data_clean[,2:13], order.by = A1_data_clean[,1])
+#class(A1_xts)
+
+#Check the periodicity (15 mins)
+periodicity(A1_xts)
+```
+In a manufacturing system, stage 1 precedes stage 2 and so on,we get 15 minute delay between the data from stage 1 causing the data in stage 2.So that we have to lag data by 15 minutes for each stage before modelling starts.
+
+```{r}
+
+#15min lag for g2 variables
+g2_var_1_lag <- stats::lag(A1_xts$g2_var_1, k = "1")
+g2_var_2_lag <- stats::lag(A1_xts$g2_var_2, k = "1")
+g2_var_3_lag <- stats::lag(A1_xts$g2_var_3, k = "1")
+g2_var_4_lag <- stats::lag(A1_xts$g2_var_4, k = "1")
+
+#30min lag for g3 variables
+g3_var_1_lag <- stats::lag(A1_xts$g3_var_1, k = "2")
+g3_var_2_lag <- stats::lag(A1_xts$g3_var_2, k = "2")
+
+#Removedg3_var_3 
+g3_var_4_lag <- stats::lag(A1_xts$g3_var_4, k = "2")
+g3_var_5_lag <- stats::lag(A1_xts$g3_var_5, k = "2")
+
+#45min lag for g4 TARGET variable
+g4_var_2_lag <- stats::lag(A1_xts$g4_var_2, k = "3")
+
+#combine all the variables together
+After_lags_data <- merge(A1_xts$g1_var_1, 
+                 A1_xts$g1_var_2, 
+                 A1_xts$g1_var_3, 
+                 g2_var_1_lag, 
+                 g2_var_2_lag, 
+                 g2_var_3_lag, 
+                 g2_var_4_lag, 
+                 g3_var_1_lag, 
+                 g3_var_2_lag, 
+                 g3_var_4_lag, 
+                 g3_var_5_lag,
+                 g4_var_2_lag)
+
+head(After_lags_data, 10)
+```
+
+```{r}
+#due to lagging of the data some NAs appear, can use xts command na.omit to remove as these NAs
+#Because of lagging of data some NAs appear,Used na.omit to remove all NAs
+CleanData_AfterLag <- na.omit(After_lags_data)
+
+#check to ensure no NAs
+head(CleanData_AfterLag, 10)
+```
+
+```{r}
+#Making 3 stages data with newly created clean data set
+
+target_var <- CleanData_AfterLag[,12]
+
+#All g1 variables & target variable in Stage1
+data_stage1 <- merge(CleanData_AfterLag[,1:3], target_var)
+
+#All g1 and g2 variables & target variable in stage2
+data_stage12 <- merge(CleanData_AfterLag[,1:7], target_var) 
+
+#ALL data in stage3
+data_stage123 <- CleanData_AfterLag
+
+```
+
+##Task 2: Predict variable "g4_var_2" using  preceding measurements in the process. optimal =-0.8574 is given
+###Method I: Random Forest-Regression
+
+```{r}
+data_stage123 <- data.frame(date=index(data_stage123), coredata(data_stage123))
+
+# Select all the columns except 1st column
+data_stage123 <- data_stage123 %>%
+  select(-1)
+
+#Split the data into training and test set for data partitioning (90% train and 10% test)
+ncase <- nrow(data_stage123)
+table_idx <- sample(ncase, round(ncase*0.9), replace=FALSE)
+Model_train_Data <- data_stage123[table_idx, ]
+Model_test_data <- data_stage123[-table_idx, ]
+
+softdrink_x_var <- Model_train_Data %>% 
+  select(-g4_var_2)
+
+softdrink_y_var <- Model_train_Data %>% 
+  select(g4_var_2) %>% 
+  pull()
+
+# Create train & test indexes which will used  10 Fold cross validation
+myFolds_regression <- createFolds(softdrink_y_var, k = 10)
+
+ctrl_regression <- trainControl(
+  method = "cv", # Used for configuring resampling method: in this case cross validation 
+  number = 10, # Instruct that it is 10 cross validation
+  index = myFolds_regression, # Folds  indexes created earlier
+  verboseIter = TRUE, # Print output of each step
+  savePredictions = TRUE, 
+  preProcOptions = list(thresh = 0.8) 
+
+)
+
+model_ranger_default <- train(
+  x = softdrink_x_var, # Data set for Predictors variables
+  y = softdrink_y_var, # Response Variable
+  method = "ranger", # Machine Leaning  algorithm:ranger is used 
+  trControl = ctrl_regression, #Training Configuration
+  importance = "impurity", # This needs to be added only for `ranger` for identifying variable importance
+  preProcess = c("zv", "center")# zv: Remove predictors with zero variance,
+                                          # center, scale - centering and scaling data 
+)
+
+plot(model_ranger_default)
+
+glm_ranger_preds <- predict(model_ranger_default
+, newdata = select(Model_test_data, -g4_var_2))
+
+# Calculate Root mean square error (RMSE)
+RMSE(pred = glm_ranger_preds, obs = Model_test_data$g4_var_2)
+
+# Calculate R-square (R^2) 
+R2(pred = glm_ranger_preds, obs = select(Model_test_data, g4_var_2))
+
+plot(varImp(model_ranger_default))
+
+#graphical comparison of the observed values and the predicted values
+data.frame(
+  id = 1:length(Model_test_data$g4_var_2),
+  observed = Model_test_data$g4_var_2,
+  predicted = glm_ranger_preds
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red") +
+  ggtitle("Observed VS Predicted values comparison")
+
+# Optimal value is given for created a interquartile range for given optimal value -0.8574
+#INTERQUARTILE RANGE
+left <- quantile(data_stage123$g4_var_2, 0.25)
+right <- quantile(data_stage123$g4_var_2, 0.75)
+
+new_glm_ranger_preds <- as.data.frame(glm_ranger_preds) %>%
+  mutate(new_g4_var_2=ifelse(between(glm_ranger_preds, left, right) , 0,1 ))
+
+nrow(new_glm_ranger_preds)
+new_glm_ranger_preds %>%
+  filter(new_g4_var_2==0) %>%
+  count()
+
+
+ds_a1 <- as.data.frame(glm_ranger_preds) %>%
+  mutate(row_n = row_number())
+
+
+ggplot(as.data.frame(ds_a1), aes(x=row_n, y=glm_ranger_preds)) +
+  geom_line() +
+  geom_hline(yintercept=-0.8574, color="red", linetype="dotted")+
+  labs(x="Case Number", y="Predicted Value")
+
+
+ggplot(as.data.frame(ds_a1), aes(x=row_n, y=glm_ranger_preds)) +
+  geom_line() +
+  geom_hline(yintercept=-0.8574, color="red", linetype="solid", size = 1.1) +
+  geom_hline(yintercept=-0.8574 + 0.5, color="green", linetype="dotted", size = 1.1) +
+  geom_hline(yintercept=-0.8574 - 0.5, color="green", linetype="dotted", size = 1.1) +
+  labs(x="Case Number", y="Values", title = "Outlier range around g4_var_2 optimal according to IQR") +
+  theme_bw() +
+  theme(plot.title=element_text(hjust = 0.5))
+
+```
+```{r}
+data_stage1 <- data.frame(date=index(data_stage1), coredata(data_stage1))
+
+# Select all column from stage 
+data_stage1 <- data_stage1 %>%
+  select(-1)
+
+#Split the data into 90 % training and  10 % test set
+ncase <- nrow(data_stage1)
+table_idx <- sample(ncase, round(ncase*0.9), replace=FALSE)
+Model_train_Data <- data_stage1[table_idx, ]
+Model_test_data <- data_stage1[-table_idx, ]
+
+softdrink_x_var <- Model_train_Data %>% 
+  select(-g4_var_2)
+
+softdrink_y_var <- Model_train_Data %>% 
+  select(g4_var_2) %>% 
+  pull()
+
+
+model_ranger_stage1 <- train(
+  x = softdrink_x_var, # Predictors data set
+  y = softdrink_y_var, # Response variable
+  method = "ranger", # ML algorithm: ranger for random forest
+  trControl = ctrl_regression, # Training configuration
+  importance = "impurity", # This needs to be added only for `ranger` for identifying variable importance
+  preProcess = c("zv", "center")#, "scale" # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+glm_ranger_s1_preds <- predict(model_ranger_stage1
+, newdata = select(Model_test_data, -g4_var_2))
+
+# Calculate RMSE ROot mean square error
+RMSE(pred = glm_ranger_s1_preds, obs = Model_test_data$g4_var_2)
+
+# Calculate R square  R^2
+R2(pred = glm_ranger_s1_preds, obs = select(Model_test_data, g4_var_2))
+
+
+```
+##GLM generalizes linear regression
+Using the given optimal value -0.8574 limits set  and the values above or below this limit would be considered as an outlier.
+Label is crated in an additional column like 1 = outlier & 0 = non-outlier.
+```{r}
+# Create  configuration for regression models 
+ctrl_regression <- trainControl(
+  method = "cv", # Configuring resampling method: in this case cross validation 
+  number = 10, # Instruct that it is 10 fold-cv
+  index = myFolds_regression, # Folds' indexes
+  verboseIter = TRUE, # Print output of each step
+  savePredictions = TRUE, 
+  preProcOptions = list(thresh = 0.8) 
+  
+)
+
+model_glm_default <- train(
+  x = softdrink_x_var, # Predictors dataset
+  y = softdrink_y_var, # Response variable
+  method = "glm", # ML algorithm: GLM generalizes linear regression
+  trControl = ctrl_regression, # Training configuration
+  preProcess = c("zv", "center") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+#plot(model_glm_default)
+
+glm_preds <- predict(model_glm_default
+, newdata = select(Model_test_data, -g4_var_2))
+
+# Calculate Root Mean Square Error (RMSE)
+RMSE(pred = glm_preds, obs = Model_test_data$g4_var_2)
+
+# Calculate R square R^2
+R2(pred = glm_preds, obs = select(Model_test_data, g4_var_2))
+
+```
+
+##Method 2: Generalized Linear Regression (GLM) Logistic regression (classification)
+```{r}
+# Create a interval limits for the given optimal value -0.8574
+optimal <- -0.8574
+interval <- 0.5
+left <- optimal - interval
+right <- optimal + interval
+
+#mutate the new labbled column 
+model2_data <- data_stage123 %>%
+  mutate(new_g4_var_2=ifelse(between(g4_var_2, left, right) , 0,1 ))
+
+#Filter the data 
+model2_data_filtered <- model2_data %>%
+  filter(new_g4_var_2==0)
+
+#Plot the boxplot 
+ggplot(data_stage123, aes(x=g4_var_2)) +
+  geom_boxplot()
+
+#Data partitioning into train 90% and test 10%
+ncase <- nrow(model2_data)
+table_idx <- sample(ncase, round(ncase*0.9), replace=FALSE)
+Model_train_Data <- model2_data[table_idx, ]
+Model_test_data <- model2_data[-table_idx, ]
+
+# Let's separate predictors from the response variable `g4_var_2`
+softdrink_x_var <- Model_train_Data %>% 
+  select(-g4_var_2,-new_g4_var_2)
+  
+softdrink_y_var <- Model_train_Data %>% 
+  select(new_g4_var_2) %>% 
+  pull()
+
+# Apply the glm method on the filtered data
+model_glm_default <- glm(new_g4_var_2 ~ ., family="binomial",data=Model_train_Data)
+
+predict_list <- predict(model_glm_default, newdata = Model_test_data)
+
+#Print the graph for the created model
+data.frame(
+  id = 1:length(Model_test_data$new_g4_var_2),
+  observed = Model_test_data$new_g4_var_2,
+  predicted = predict_list
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")
+
+# Check both the R^2 and RMSE
+R2(pred = predict_list, obs = select(Model_test_data, new_g4_var_2))
+RMSE(pred = predict_list, obs = Model_test_data$new_g4_var_2)
+
+```
+### Method 3: GAM model
+Create a generalized additive model (GAM) model mod1 using the gam function.
+Fit a model to the Study1F03b data where valence has a smooth, nonlinear relation to times using the gam() function
+Smoothing s() and put independent variable in it
+GAM contains an s() bit around the predictor variable
+This s() means spline which is a mathematical way of drawing curves.
+```{r}
+# Perform GAM on the all variables and predict the g4_var2 variable
+mod2 <- gam( g4_var_2 ~ s(g1_var_1, k = 8)+ g1_var_2 + s(g1_var_3, k = 8) + g2_var_1 + g2_var_2 + g2_var_3 + s(g2_var_4, k = 5) + g3_var_1 + g3_var_2 + g3_var_4 + g3_var_5, data=Model_train_Data)
+
+# produces some diagnostic information about the fitting procedure and results
+gam.check(mod2)
+
+# Print the summary about the model
+summary(mod2)
+
+# Plot the graphs for the model
+plot(mod2, se=TRUE, shade=TRUE, shade.col = "rosybrown2", residuals = TRUE)
+
+# predict using the created model
+predict_list2 <- predict(mod2, newdata = Model_test_data)
+
+# Print he r square and root mean sqare error
+R2(pred = predict_list2, obs = select(Model_test_data, g4_var_2))
+RMSE(pred = predict_list2, obs = Model_test_data$g4_var_2)
+
+# Print the different graphs
+data.frame(
+  id = 1:length(Model_test_data$g4_var_2),
+  observed = Model_test_data$g4_var_2,
+  predicted = predict_list
+) %>% 
+  ggplot(main="") +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predict_list2), colour = "red") +
+  ggtitle("Comparison between the observed and the predicted")
+
+```
+
+###Method 4: Ranger on cases that are near the optimal value -0.8574
+```{r}
+
+# Load the required data into dataframe
+softdrink_Data <- model2_data_filtered %>%
+  select(g1_var_1, g1_var_2, g1_var_3, g2_var_1, g2_var_2, g2_var_3, g2_var_4, g3_var_1, g3_var_2, g3_var_4, g3_var_5,g4_var_2)
+
+# Data partitioning using the train 90% and test data 10%
+ncase <- nrow(softdrink_Data)
+table_idx <- sample(ncase, round(ncase*0.9), replace=FALSE)
+Model_train_Data <- softdrink_Data[table_idx, ]
+Model_test_data <- softdrink_Data[-table_idx, ]
+
+# Let's separate predictors `g4_var_2` 
+softdrink_x_var <- Model_train_Data %>% 
+  select(-g4_var_2)
+  
+softdrink_y_var <- Model_train_Data %>% 
+  select(g4_var_2) %>% 
+  pull()
+
+# Create train and test indexes which will be used in 10-Fold Cross validation
+myFolds_regression <- createFolds(softdrink_y_var, k = 10)
+
+# Create unique configuration which will be shared across all regression models 
+ctrl_regression <- trainControl(
+  method = "cv", # Used for configuring resampling method: in this case cross validation 
+  number = 10, # Instruct that it is 10 fold-cv
+  index = myFolds_regression, # Folds' indexes
+  verboseIter = TRUE, # Print output of each step
+  savePredictions = TRUE, 
+  preProcOptions = list(thresh = 0.8) 
+)
+
+# Train LM model using default CARET parameters
+# As the best parameter selects the one for which the model has the lowest RMSE score
+model_ranger_default <- train(
+  x = softdrink_x_var, # Predictors dataset
+  y = softdrink_y_var, # Response variable
+  method = "ranger", # ML algorithm: ranger 
+  trControl = ctrl_regression, # Training configuration
+  importance = "impurity", # This needs to be added only for `ranger` for identifying variable importance
+  preProcess = c("zv", "center")#, "scale" # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+# Plot the created model
+plot(model_ranger_default)
+
+glm_ranger_preds <- predict(model_ranger_default
+, newdata = select(Model_test_data, -g4_var_2))
+
+# Calculate RMSE
+RMSE(pred = glm_ranger_preds, obs = Model_test_data$g4_var_2)
+
+# Calculate R^2
+R2(pred = glm_ranger_preds, obs = select(Model_test_data, g4_var_2))
+
+#visualise predicted vs observed values
+data.frame(
+  id = 1:length(Model_test_data$g4_var_2),
+  observed = Model_test_data$g4_var_2,
+  predicted = glm_ranger_preds
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")
+
+```
+
+## Realationship between g4_var and group g6 3 variables
+### Task3: Ascertain the relationship between g4_var_2 and g6_var2,g6_var3, and g6_var4.
+Color intensity and number are proportional to the correlation coefficients.
+The variables have perfect correlation with itself can see in diagonal values
+There's a weak negative correlation between g6_var2 and g4_var2 (-0.33)
+There's a very weak negative correlation between g6_var3 and g4_var2 (-0.12)
+very weak positive correlation (no relationship between g6_var4 and g4_var2 (0.05)
+
+```{r}
+#find the correlation between target variable and other 3 variables
+correlations <- cor(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")])
+
+#Plot the correlation matrix
+corrplot(correlations, method="circle")
+
+#Plot the same matrix with the correlation coefficient
+corrplot(correlations, method="number")
+
+#Check the covariance for all 4 variables
+covariances <- cov(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")])
+
+#Print the correlation chart for all 4 variables which displayed hstogram scatter plot in same correaltion matrix
+chart.Correlation(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")], histogram=TRUE, pch=19)
+
+# Print the graph to check the correlations
+g1 <- ggplot(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=g4_var_2,y=g6_var_2), color="red") 
+
+g2 <- ggplot(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=g4_var_2,y=g6_var_3), color="yellow") 
+
+
+g3 <- ggplot(A1_data[,c("g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=g4_var_2,y=g6_var_4), color="blue") 
+
+grid.arrange(grobs=list(g1, g2, g3), ncol=3, 
+             main="Multiple plots on the same page")
+
+
+# Print all 4 variables with respect to date field 
+gg1 <- ggplot(A1_data[,c("datetime","g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=datetime,y=g4_var_2), color="red") 
+gg2 <- ggplot(A1_data[,c("datetime","g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=datetime,y=g6_var_2), color="green") 
+gg3 <- ggplot(A1_data[,c("datetime","g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=datetime,y=g6_var_3), color="blue") 
+gg4 <- ggplot(A1_data[,c("datetime","g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_point(aes(x=datetime,y=g6_var_4), color="yellow") 
+
+grid.arrange(grobs=list(gg1, gg2, gg3, gg4), ncol=2, 
+             main="Multiple plots on the same page")
+
+# Print the Outliers are not overlapping because of  the weak relationship between them
+ggplot(A1_data[,c("datetime","g4_var_2","g6_var_2","g6_var_3","g6_var_4")])+
+  geom_line(aes(x=datetime,y=g4_var_2, alpha="0.8"), color="red", show.legend = TRUE) +
+  geom_line(aes(x=datetime,y=g6_var_2, alpha="0.7"), color="green") + 
+  geom_line(aes(x=datetime,y=g6_var_3, alpha="0.7"), color="yellow") +
+  geom_line(aes(x=datetime,y=g6_var_4, alpha="0.7"), color="blue") +
+  scale_y_continuous(limits = c(-20, 20), breaks = c(-20, -15, -10, -5, 0, 5, 10, 15, 20)) +
+  labs(y="Variable values", x="Datetime")
+
+
+```
+
+
